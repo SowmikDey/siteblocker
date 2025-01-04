@@ -1,7 +1,9 @@
-/*global chrome*/
+/* global chrome */
 let activeTabId = null;
 let restrictedSites = new Set();
+let isBlockerEnabled = true; // Default state
 
+// On extension installation or update
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.sync.get(["blockedSites", "isBlockerEnabled"], (data) => {
     const blockedSites = data.blockedSites || [];
@@ -10,42 +12,38 @@ chrome.runtime.onInstalled.addListener(() => {
 
     if (data.isBlockerEnabled === undefined) {
       chrome.storage.sync.set({ isBlockerEnabled: true });
+    } else {
+      isBlockerEnabled = data.isBlockerEnabled;
     }
   });
 });
 
-
-
-
-/*==== It'll fetch the blocked websites ====*/
-chrome.storage.sync.get("blockedSites", (data) => {
+// Fetch blocked websites and blocker state on load
+chrome.storage.sync.get(["blockedSites", "isBlockerEnabled"], (data) => {
   const blockedSites = data.blockedSites || [];
-  blockedSites.forEach((site) => {
-    restrictedSites.add(normalizeURL(site));
-  });
+  restrictedSites = new Set(blockedSites.map(normalizeURL));
+  isBlockerEnabled = data.isBlockerEnabled ?? true;
 });
 
-
-/*=== It'll do the work of removing www. from the link to make it more generalized ===*/
+// Normalize URL to remove "www."
 function normalizeURL(url) {
   return url.replace(/^www\./i, "");
 }
 
-/*==== It'll get the domain of the URL ====*/
+// Extract domain from a URL
 function getDomain(url) {
   try {
     const { hostname } = new URL(url);
     return normalizeURL(hostname);
-  } catch (e)
-   {
+  } catch (e) {
     console.log(e);
     return null;
   }
 }
 
-/*==== It'll check whether the domain is in the saved blocked sites then blocks it ====*/
+// Check and block sites if blocker is enabled
 function checkAndBlock(tab) {
-  if (!tab.url) return; // Skip if no URL is available
+  if (!isBlockerEnabled || !tab.url) return; // Skip if blocker is disabled
   const domain = getDomain(tab.url);
   if (domain && restrictedSites.has(domain)) {
     const blockPageUrl = chrome.runtime.getURL("./BlockedPage.html");
@@ -53,8 +51,7 @@ function checkAndBlock(tab) {
   }
 }
 
-
-/*==== It'll keep a track of which tab is open ====*/
+// Track active tab changes
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   chrome.tabs.get(tabId, (tab) => {
     activeTabId = tabId;
@@ -62,29 +59,21 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   });
 });
 
-// Listener for tab updates
+// Track tab updates
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === "complete" && tabId === activeTabId) {
     checkAndBlock(tab);
   }
 });
 
-/*==== It'll send message to the content.js whether website is blocked or not ====*/
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'isSiteBlocked') {
-    chrome.storage.sync.get("blockedSites", ({ blockedSites = [] }) => {
-      const isBlocked = blockedSites.includes(normalizeURL(message.hostname));
-      sendResponse(isBlocked);
-    });
-    return true;
-  }
-});
-
-
+// Listen for changes to settings
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.blockedSites) {
     const updatedSites = changes.blockedSites.newValue || [];
     restrictedSites = new Set(updatedSites.map(normalizeURL));
   }
-});
 
+  if (changes.isBlockerEnabled) {
+    isBlockerEnabled = changes.isBlockerEnabled.newValue;
+  }
+});
